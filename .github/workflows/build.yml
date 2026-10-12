@@ -1,0 +1,212 @@
+name: Build private KikisApp
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Private branch, tag, or commit"
+        required: true
+        type: string
+        default: "codex/ios-widgets-live-activities"
+      run_tests:
+        description: "Run existing Swift and Widget checks"
+        type: boolean
+        default: true
+      ui_review:
+        description: "Also capture iPhone UI screenshots"
+        type: boolean
+        default: false
+      widget_integration:
+        description: "Also run Widget integration tests"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "kikis-build-${{ github.ref }}"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 110
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout source from private repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: gitupdate/qiqu_web
+          ref: ${{ inputs.source_ref }}
+          path: private-source
+          fetch-depth: 1
+          ssh-key: ${{ secrets.KIKIS_PRIVATE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Verify Xcode 27 and iOS 27 SDK
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "iOS SDK: $sdk_version"
+          test "${sdk_version%%.*}" -ge 27
+
+      - name: Run original Swift and Widget tests
+        if: inputs.run_tests
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/KikisPrivateLogs"
+          cd "$GITHUB_WORKSPACE/private-source"
+          exec 3>&1
+          trap 'echo "::error::Private tests failed. Download encrypted diagnostics." >&3' ERR
+          exec > "$RUNNER_TEMP/KikisPrivateLogs/tests.log" 2>&1
+
+          swiftc -swift-version 5 \
+            ios/KikisApp/RefreshCoordinator.swift \
+            ios/scripts/test-refresh-coordinator.swift \
+            -o "$RUNNER_TEMP/KikisRefreshCoordinatorTests"
+          "$RUNNER_TEMP/KikisRefreshCoordinatorTests"
+
+          swiftc -swift-version 5 \
+            ios/KikisApp/TicketDepositPolicy.swift \
+            ios/scripts/test-ticket-deposit-policy.swift \
+            -o "$RUNNER_TEMP/KikisTicketDepositTests"
+          "$RUNNER_TEMP/KikisTicketDepositTests"
+          python3 ios/scripts/check-ticket-deposit-layout.py
+
+          swiftc -swift-version 5 -D WIDGET_MODEL_TESTS \
+            ios/Shared/WidgetSnapshot.swift \
+            ios/Shared/DepositActivityAttributes.swift \
+            ios/scripts/test-widget-models.swift \
+            -o "$RUNNER_TEMP/KikisWidgetModelTests"
+          "$RUNNER_TEMP/KikisWidgetModelTests"
+          swiftc -swift-version 5 \
+            ios/Shared/WidgetSnapshot.swift \
+            ios/KikisWidgets/WidgetBalanceClient.swift \
+            ios/scripts/test-widget-network.swift \
+            -o "$RUNNER_TEMP/KikisWidgetNetworkTests"
+          "$RUNNER_TEMP/KikisWidgetNetworkTests"
+          python3 ios/scripts/check-widget-configuration.py
+
+      - name: Build unsigned iPhone app
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/KikisPrivateLogs"
+          cd "$GITHUB_WORKSPACE/private-source"
+          exec 3>&1
+          trap 'echo "::error::iOS build failed. Download encrypted diagnostics." >&3' ERR
+          exec > "$RUNNER_TEMP/KikisPrivateLogs/build.log" 2>&1
+          xcodebuild \
+            -project ios/KikisApp.xcodeproj \
+            -scheme KikisApp \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/KikisDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            build
+
+      - name: Optional simulator UI review
+        if: inputs.ui_review
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/KikisPrivateLogs"
+          cd "$GITHUB_WORKSPACE/private-source"
+          exec 3>&1
+          trap 'echo "::error::UI review failed. Download encrypted diagnostics." >&3' ERR
+          exec > "$RUNNER_TEMP/KikisPrivateLogs/ui-review.log" 2>&1
+          xcodebuild \
+            -project ios/KikisApp.xcodeproj \
+            -scheme KikisApp \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/KikisReviewBuild" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG UI_REVIEW' \
+            build
+          UI_REVIEW_APP="$RUNNER_TEMP/KikisReviewBuild/Build/Products/Debug-iphonesimulator/KikisApp.app" \
+            bash ios/scripts/capture-ui.sh
+
+      - name: Optional Widget integration
+        if: inputs.widget_integration
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/KikisPrivateLogs"
+          cd "$GITHUB_WORKSPACE/private-source"
+          exec 3>&1
+          trap 'echo "::error::Widget integration failed. Download encrypted diagnostics." >&3' ERR
+          exec > "$RUNNER_TEMP/KikisPrivateLogs/widget-integration.log" 2>&1
+          bash ios/scripts/test-home-widget.sh
+
+      - name: Package and verify unsigned IPA
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/KikisPrivateLogs"
+          app="$RUNNER_TEMP/KikisDerivedData/Build/Products/Release-iphoneos/KikisApp.app"
+          test -f "$app/Info.plist"
+          test -f "$app/PlugIns/KikisWidgets.appex/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :NSSupportsLiveActivities' "$app/Info.plist" | grep -q true
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' \
+            "$app/PlugIns/KikisWidgets.appex/Info.plist" | grep -q com.apple.widgetkit-extension
+          mkdir -p "$RUNNER_TEMP/KikisPackage/Payload"
+          ditto "$app" "$RUNNER_TEMP/KikisPackage/Payload/KikisApp.app"
+          (cd "$RUNNER_TEMP/KikisPackage" && zip -q -r "$RUNNER_TEMP/KikisApp-unsigned.ipa" Payload)
+          if ! unzip -t "$RUNNER_TEMP/KikisApp-unsigned.ipa" > "$RUNNER_TEMP/KikisPrivateLogs/ipa-check.log" 2>&1; then
+            echo "::error::IPA integrity check failed. Download encrypted diagnostics."
+            exit 1
+          fi
+          shasum -a 256 "$RUNNER_TEMP/KikisApp-unsigned.ipa" > "$RUNNER_TEMP/KikisPrivateLogs/ipa-sha256.txt"
+
+      - name: Encrypt IPA and private build diagnostics
+        if: always()
+        env:
+          KIKIS_ARTIFACT_PASSWORD: ${{ secrets.KIKIS_ARTIFACT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$KIKIS_ARTIFACT_PASSWORD"
+          mkdir -p "$RUNNER_TEMP/KikisPrivateLogs"
+          if test -f "$RUNNER_TEMP/KikisApp-unsigned.ipa"; then
+            openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+              -in "$RUNNER_TEMP/KikisApp-unsigned.ipa" \
+              -out "$GITHUB_WORKSPACE/KikisApp-unsigned.ipa.enc" \
+              -pass env:KIKIS_ARTIFACT_PASSWORD
+          fi
+          mkdir -p "$RUNNER_TEMP/KikisPrivateBundle"
+          ditto "$RUNNER_TEMP/KikisPrivateLogs" "$RUNNER_TEMP/KikisPrivateBundle/diagnostics"
+          if test -d "$RUNNER_TEMP/KikisUIReview"; then
+            ditto "$RUNNER_TEMP/KikisUIReview" "$RUNNER_TEMP/KikisPrivateBundle/ui-review"
+          fi
+          if test -d "$RUNNER_TEMP/KikisWidgetIntegration"; then
+            ditto "$RUNNER_TEMP/KikisWidgetIntegration" "$RUNNER_TEMP/KikisPrivateBundle/widget-integration"
+          fi
+          if test -z "$(find "$RUNNER_TEMP/KikisPrivateBundle" -type f -print -quit)"; then
+            echo "No diagnostics generated" > "$RUNNER_TEMP/KikisPrivateBundle/status.txt"
+          fi
+          tar -czf "$RUNNER_TEMP/KikisDiagnostics.tar.gz" -C "$RUNNER_TEMP/KikisPrivateBundle" .
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+            -in "$RUNNER_TEMP/KikisDiagnostics.tar.gz" \
+            -out "$GITHUB_WORKSPACE/KikisDiagnostics.tar.gz.enc" \
+            -pass env:KIKIS_ARTIFACT_PASSWORD
+          rm -f "$RUNNER_TEMP/KikisDiagnostics.tar.gz"
+
+      - name: Publish encrypted artifacts only
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: KikisApp-build-${{ github.run_number }}
+          path: |
+            KikisApp-unsigned.ipa.enc
+            KikisDiagnostics.tar.gz.enc
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+

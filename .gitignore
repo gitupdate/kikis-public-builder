@@ -1,0 +1,10 @@
+/*
+!/.gitignore
+!/README.md
+!/decrypt-ipa.sh
+!/.github/
+/.github/*
+!/.github/workflows/
+/.github/workflows/*
+!/.github/workflows/build.yml
+
