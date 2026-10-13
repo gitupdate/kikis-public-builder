@@ -10,7 +10,7 @@ Manual builds: open Actions > Build private KikisApp > Run workflow, or use:
 
 Download the encrypted artifact, then on the Mac run:
 
-    bash /Users/lxk/WebstormProjects/kikis-public-builder/decrypt-ipa.sh KikisApp-unsigned.ipa.enc
+    bash ~/WebstormProjects/kikis-public-builder/decrypt-ipa.sh KikisApp-unsigned.ipa.enc
 
 The decryption password is stored locally at ~/.config/kikis-public-builder/ipa-password, not in this repository. Diagnostics are also encrypted and can be decrypted with the same helper, then extracted from tar.gz.
 
