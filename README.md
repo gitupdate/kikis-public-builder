@@ -18,3 +18,21 @@ Unsigned IPA includes Payload/KikisApp.app/PlugIns/KikisWidgets.appex and requir
 
 All Actions logs are public even though source remains private. Build output, screenshots, and source-derived diagnostic messages are redirected to encrypted artifacts; please do not add steps that print secrets or application source to logs. No pull_request or push triggers are enabled. Standard public hosted runner usage is free subject to GitHub rules and any applicable artifact storage limits.
 
+
+## Three independent jobs (always run)
+
+Manual builds now launch these three parallel jobs:
+
+1. Unsigned iOS 27 IPA: compile and encrypt IPA plus diagnostics.
+2. iPhone 15 visual review: build simulator app and capture 50 test-data screenshots, then encrypt screenshots and logs as KikisUIReview.tar.gz.enc.
+3. Home Screen widget integration: run the original UI integration tests, export available test screenshots and xcresult, then encrypt results and logs as KikisWidgetIntegration.tar.gz.enc.
+
+The latter two are separate jobs that run by default, not optional steps of the IPA job. The same private source_ref is checked out using the read-only deploy key for each job. No cleartext screenshots or test bundles are uploaded to the public repository.
+
+Decrypt these archives on your Mac with the same decrypt helper:
+
+    bash decrypt-ipa.sh KikisUIReview.tar.gz.enc
+    tar -xzf KikisUIReview.tar.gz
+
+    bash decrypt-ipa.sh KikisWidgetIntegration.tar.gz.enc
+    tar -xzf KikisWidgetIntegration.tar.gz
