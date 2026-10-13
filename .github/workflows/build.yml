@@ -7,7 +7,7 @@ on:
         description: "Private branch, tag, or commit"
         required: true
         type: string
-        default: "codex/ios-widgets-live-activities"
+        default: "app_widgets"
       run_tests:
         description: "Run existing Swift and Widget checks"
         type: boolean
@@ -70,19 +70,33 @@ jobs:
           "$RUNNER_TEMP/KikisTicketDepositTests"
           python3 ios/scripts/check-ticket-deposit-layout.py
 
-          swiftc -swift-version 5 -D WIDGET_MODEL_TESTS \
-            ios/Shared/WidgetSnapshot.swift \
-            ios/Shared/DepositActivityAttributes.swift \
-            ios/scripts/test-widget-models.swift \
-            -o "$RUNNER_TEMP/KikisWidgetModelTests"
-          "$RUNNER_TEMP/KikisWidgetModelTests"
-          swiftc -swift-version 5 \
-            ios/Shared/WidgetSnapshot.swift \
-            ios/KikisWidgets/WidgetBalanceClient.swift \
-            ios/scripts/test-widget-network.swift \
-            -o "$RUNNER_TEMP/KikisWidgetNetworkTests"
-          "$RUNNER_TEMP/KikisWidgetNetworkTests"
-          python3 ios/scripts/check-widget-configuration.py
+          if test -f ios/scripts/test-widget-balances.swift; then
+            # app_widgets-specific WidgetKit model, balance and network tests.
+            swiftc -swift-version 5 \
+              ios/Shared/BalanceSummary.swift \
+              ios/Shared/WidgetBalanceClient.swift \
+              ios/scripts/test-widget-balances.swift \
+              -o "$RUNNER_TEMP/KikisWidgetBalanceTests"
+            "$RUNNER_TEMP/KikisWidgetBalanceTests"
+          elif test -f ios/scripts/test-widget-models.swift; then
+            # Legacy source branch.
+            swiftc -swift-version 5 -D WIDGET_MODEL_TESTS \
+              ios/Shared/WidgetSnapshot.swift \
+              ios/Shared/DepositActivityAttributes.swift \
+              ios/scripts/test-widget-models.swift \
+              -o "$RUNNER_TEMP/KikisWidgetModelTests"
+            "$RUNNER_TEMP/KikisWidgetModelTests"
+            swiftc -swift-version 5 \
+              ios/Shared/WidgetSnapshot.swift \
+              ios/KikisWidgets/WidgetBalanceClient.swift \
+              ios/scripts/test-widget-network.swift \
+              -o "$RUNNER_TEMP/KikisWidgetNetworkTests"
+            "$RUNNER_TEMP/KikisWidgetNetworkTests"
+            python3 ios/scripts/check-widget-configuration.py
+          else
+            echo "No matching Widget model tests for selected source branch" >&2
+            exit 1
+          fi
 
       - name: Build unsigned iPhone app
         run: |
@@ -108,12 +122,27 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/KikisPrivateLogs"
+          exec 3>&1
+          trap 'echo "::error::IPA packaging failed. Download encrypted diagnostics." >&3' ERR
+          exec > "$RUNNER_TEMP/KikisPrivateLogs/package.log" 2>&1
           app="$RUNNER_TEMP/KikisDerivedData/Build/Products/Release-iphoneos/KikisApp.app"
           test -f "$app/Info.plist"
-          test -f "$app/PlugIns/KikisWidgets.appex/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Print :NSSupportsLiveActivities' "$app/Info.plist" | grep -q true
-          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' \
-            "$app/PlugIns/KikisWidgets.appex/Info.plist" | grep -q com.apple.widgetkit-extension
+          if test -f "$app/PlugIns/KikisWidget.appex/Info.plist"; then
+            # app_widgets embeds a singular KikisWidget.appex.
+            python3 "$GITHUB_WORKSPACE/private-source/ios/scripts/check-widget-package.py" \
+              "$app" "$RUNNER_TEMP/KikisPrivateLogs" \
+              > "$RUNNER_TEMP/KikisPrivateLogs/widget-package-check.log" 2>&1
+            cp "$GITHUB_WORKSPACE/private-source/ios/WIDGET_SIGNING.md" \
+              "$RUNNER_TEMP/KikisPrivateLogs/KikisWidget-signing-guide.md"
+          elif test -f "$app/PlugIns/KikisWidgets.appex/Info.plist"; then
+            # Legacy branch: Widgets.appex plus Live Activities.
+            /usr/libexec/PlistBuddy -c 'Print :NSSupportsLiveActivities' "$app/Info.plist" | grep -q true
+            /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' \
+              "$app/PlugIns/KikisWidgets.appex/Info.plist" | grep -q com.apple.widgetkit-extension
+          else
+            echo "::error::The build did not embed a recognized WidgetKit extension."
+            exit 1
+          fi
           mkdir -p "$RUNNER_TEMP/KikisPackage/Payload"
           ditto "$app" "$RUNNER_TEMP/KikisPackage/Payload/KikisApp.app"
           (cd "$RUNNER_TEMP/KikisPackage" && zip -q -r "$RUNNER_TEMP/KikisApp-unsigned.ipa" Payload)
@@ -251,7 +280,7 @@ jobs:
           compression-level: 0
 
   widget-integration:
-    name: Home Screen widget integration
+    name: Widget extension validation
     runs-on: xcode-27
     timeout-minutes: 40
     defaults:
@@ -269,7 +298,7 @@ jobs:
           persist-credentials: false
 
 
-      - name: Exercise the real widget gallery and timeline
+      - name: Validate widget extension for selected source
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/KikisPrivateLogs"
@@ -277,7 +306,54 @@ jobs:
           exec 3>&1
           trap 'echo "::error::Widget integration failed. Download encrypted diagnostics." >&3' ERR
           exec > "$RUNNER_TEMP/KikisPrivateLogs/widget-integration.log" 2>&1
-          bash ios/scripts/test-home-widget.sh
+          if test -f ios/scripts/test-home-widget.sh; then
+            # Legacy source: executes the real Widget gallery XCTest.
+            bash ios/scripts/test-home-widget.sh
+          elif test -f ios/scripts/test-widget-balances.swift; then
+            # app_widgets defines no XCTest target. Exercise pure-model tests
+            # plus installation of the embedded extension and host launch on iPhone 15.
+            mkdir -p "$RUNNER_TEMP/KikisWidgetIntegration"
+            swiftc -swift-version 5 \
+              ios/Shared/BalanceSummary.swift \
+              ios/Shared/WidgetBalanceClient.swift \
+              ios/scripts/test-widget-balances.swift \
+              -o "$RUNNER_TEMP/KikisWidgetBalanceIntegrationTests"
+            "$RUNNER_TEMP/KikisWidgetBalanceIntegrationTests"
+
+            xcodebuild \
+              -project ios/KikisApp.xcodeproj \
+              -scheme KikisApp \
+              -configuration Debug \
+              -sdk iphonesimulator \
+              -destination 'generic/platform=iOS Simulator' \
+              -derivedDataPath "$RUNNER_TEMP/KikisWidgetTestBuild" \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG UI_REVIEW' \
+              build
+
+            simulator_app="$RUNNER_TEMP/KikisWidgetTestBuild/Build/Products/Debug-iphonesimulator/KikisApp.app"
+            test -f "$simulator_app/Info.plist"
+            python3 ios/scripts/check-widget-package.py \
+              "$simulator_app" "$RUNNER_TEMP/KikisWidgetIntegration"
+
+            xcrun simctl list runtimes --json > "$RUNNER_TEMP/KikisWidgetIntegration/runtimes.json"
+            runtime_id="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["runtimes"]; a=[x for x in r if x.get("isAvailable") and x.get("version","").split(".")[0]=="27" and "iOS" in x["name"]]; print(a[-1]["identifier"] if a else sys.exit("No iOS 27 simulator runtime"))' "$RUNNER_TEMP/KikisWidgetIntegration/runtimes.json")"
+            simulator_id="$(xcrun simctl create 'Kikis Widget Integration' com.apple.CoreSimulator.SimDeviceType.iPhone-15 "$runtime_id")"
+            trap 'xcrun simctl shutdown "$simulator_id" >/dev/null 2>&1 || true; xcrun simctl delete "$simulator_id" >/dev/null 2>&1 || true' EXIT
+            xcrun simctl boot "$simulator_id"
+            xcrun simctl bootstatus "$simulator_id" -b
+            xcrun simctl install "$simulator_id" "$simulator_app"
+            bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$simulator_app/Info.plist")"
+            installed_app="$(xcrun simctl get_app_container "$simulator_id" "$bundle_id" app)"
+            test -f "$installed_app/PlugIns/KikisWidget.appex/Info.plist"
+            test -f "$installed_app/PlugIns/KikisWidget.appex/KikisWidget"
+            xcrun simctl launch "$simulator_id" "$bundle_id" --ui-review home
+            echo "PASS: iPhone 15 installed and launched app with WidgetKit extension"
+          else
+            echo "Unknown Widget source layout; cannot run integration" >&2
+            exit 1
+          fi
 
       - name: Export widget test screenshots
         if: always()
