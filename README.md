@@ -49,3 +49,14 @@ packaging, iPhone 15 installation and host launch. This is a real simulator
 installation test, not a Home Screen gallery UI test; app_widgets does not
 yet include a Widget UI XCTest target. Selecting the earlier source branch
 still runs its original test-home-widget.sh gallery tests.
+
+## Keep the builder synchronized
+
+When changing private iOS source, shared models, tests, build scripts, project
+layout, SDK requirements or packaging, review and update this repository's
+`.github/workflows/build.yml` in the same task. Updating the private workflow
+alone does not update this public builder. Keep the IPA and Widget validation
+jobs' Swift source lists complete, run new relevant tests, and preserve supported
+older source layouts. Validate affected commands and run this public workflow
+against the intended private source after pushing build changes. Private source
+and source-derived diagnostics must remain private or encrypted.
