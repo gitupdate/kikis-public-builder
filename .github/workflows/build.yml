@@ -70,14 +70,36 @@ jobs:
           "$RUNNER_TEMP/KikisTicketDepositTests"
           python3 ios/scripts/check-ticket-deposit-layout.py
 
+          if test -f ios/scripts/test-withdraw-history.swift; then
+            history_models=ios/Shared/WithdrawHistoryModels.swift
+            if ! test -f "$history_models"; then
+              history_models=ios/KikisApp/WithdrawHistoryModels.swift
+            fi
+            swiftc -swift-version 5 \
+              "$history_models" \
+              ios/scripts/test-withdraw-history.swift \
+              -o "$RUNNER_TEMP/KikisWithdrawHistoryTests"
+            "$RUNNER_TEMP/KikisWithdrawHistoryTests"
+          fi
+
           if test -f ios/scripts/test-widget-balances.swift; then
             # app_widgets-specific WidgetKit model, balance and network tests.
+            widget_sources=(ios/Shared/BalanceSummary.swift ios/Shared/WidgetBalanceClient.swift)
+            if test -f ios/Shared/WidgetWithdrawSummary.swift; then
+              widget_sources+=(ios/Shared/WithdrawHistoryModels.swift ios/Shared/WidgetWithdrawSummary.swift)
+            fi
             swiftc -swift-version 5 \
-              ios/Shared/BalanceSummary.swift \
-              ios/Shared/WidgetBalanceClient.swift \
+              "${widget_sources[@]}" \
               ios/scripts/test-widget-balances.swift \
               -o "$RUNNER_TEMP/KikisWidgetBalanceTests"
             "$RUNNER_TEMP/KikisWidgetBalanceTests"
+            if test -f ios/scripts/test-widget-withdraw-history.swift; then
+              swiftc -swift-version 5 \
+                "${widget_sources[@]}" \
+                ios/scripts/test-widget-withdraw-history.swift \
+                -o "$RUNNER_TEMP/KikisWidgetWithdrawTests"
+              "$RUNNER_TEMP/KikisWidgetWithdrawTests"
+            fi
           elif test -f ios/scripts/test-widget-models.swift; then
             # Legacy source branch.
             swiftc -swift-version 5 -D WIDGET_MODEL_TESTS \
@@ -313,12 +335,22 @@ jobs:
             # app_widgets defines no XCTest target. Exercise pure-model tests
             # plus installation of the embedded extension and host launch on iPhone 15.
             mkdir -p "$RUNNER_TEMP/KikisWidgetIntegration"
+            widget_sources=(ios/Shared/BalanceSummary.swift ios/Shared/WidgetBalanceClient.swift)
+            if test -f ios/Shared/WidgetWithdrawSummary.swift; then
+              widget_sources+=(ios/Shared/WithdrawHistoryModels.swift ios/Shared/WidgetWithdrawSummary.swift)
+            fi
             swiftc -swift-version 5 \
-              ios/Shared/BalanceSummary.swift \
-              ios/Shared/WidgetBalanceClient.swift \
+              "${widget_sources[@]}" \
               ios/scripts/test-widget-balances.swift \
               -o "$RUNNER_TEMP/KikisWidgetBalanceIntegrationTests"
             "$RUNNER_TEMP/KikisWidgetBalanceIntegrationTests"
+            if test -f ios/scripts/test-widget-withdraw-history.swift; then
+              swiftc -swift-version 5 \
+                "${widget_sources[@]}" \
+                ios/scripts/test-widget-withdraw-history.swift \
+                -o "$RUNNER_TEMP/KikisWidgetWithdrawIntegrationTests"
+              "$RUNNER_TEMP/KikisWidgetWithdrawIntegrationTests"
+            fi
 
             xcodebuild \
               -project ios/KikisApp.xcodeproj \
