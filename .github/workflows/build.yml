@@ -57,6 +57,18 @@ jobs:
           trap 'echo "::error::Private tests failed. Download encrypted diagnostics." >&3' ERR
           exec > "$RUNNER_TEMP/KikisPrivateLogs/tests.log" 2>&1
 
+          if test -f ios/scripts/test-remote-notifications.swift; then
+            swiftc -swift-version 5 -D NOTIFICATION_TESTS -parse-as-library \
+              ios/KikisApp/RemoteNotifications.swift \
+              ios/scripts/test-remote-notifications.swift \
+              -o "$RUNNER_TEMP/KikisRemoteNotificationTests"
+            "$RUNNER_TEMP/KikisRemoteNotificationTests"
+          fi
+          if test -f tests/notification-test.test.js; then
+            npm ci --ignore-scripts
+            node --test tests/notification-test.test.js test/live-activity-push.test.js
+          fi
+
           swiftc -swift-version 5 \
             ios/KikisApp/RefreshCoordinator.swift \
             ios/scripts/test-refresh-coordinator.swift \
