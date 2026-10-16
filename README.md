@@ -60,10 +60,3 @@ jobs' Swift source lists complete, run new relevant tests, and preserve supporte
 older source layouts. Validate affected commands and run this public workflow
 against the intended private source after pushing build changes. Private source
 and source-derived diagnostics must remain private or encrypted.
-
-
-When the selected private source includes remote notification tests, the encrypted
-check step also runs its Swift permission/registration tests and Node APNs transport
-and 60-second scheduling tests. The selected source's package validator checks its
-required host/Widget identities and exports separate host/Widget signing entitlements
-inside encrypted diagnostics. Earlier source layouts remain supported.
