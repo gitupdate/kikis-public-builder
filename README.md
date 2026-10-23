@@ -66,9 +66,9 @@ older source layouts. Validate affected commands and run this public workflow
 against the intended private source after pushing build changes. Private source
 and source-derived diagnostics must remain private or encrypted.
 
-## YongCan unsigned IPA
+## YongCan unsigned IPA and UI review
 
-Open Actions > **Build private YongCan IPA** > Run workflow. Choose a private
+Open Actions > **Build private YongCan IPA and UI review** > Run workflow. Choose a private
 branch, tag or commit with `source_ref` (default `main`); protocol tests are
 enabled by default. This independent workflow does not run KikisApp's three jobs.
 
@@ -78,12 +78,16 @@ gh run list -R gitupdate/kikis-public-builder --workflow build-yongcan.yml --lim
 gh run download RUN_ID -R gitupdate/kikis-public-builder
 ```
 
-The job runs `swift test`, installs XcodeGen if needed, generates the project,
+Two independent jobs start in parallel with no `needs` dependency. Each checks
+out the chosen private source and uploads its own encrypted artifact. A failed
+visual review does not block a successful IPA or its download.
+
+**Unsigned YongCan iOS 27 IPA** runs `swift test`, installs XcodeGen if needed, generates the project,
 archives the unsigned iPhone app, and checks its bundle ID, iOS 17 minimum,
 arm64 executable and IPA archive integrity. The Actions run number supplies
 the build number. Signing certificates and provisioning profiles are not needed.
 
-After validating the IPA, the same job builds an isolated `UI_REVIEW` simulator
+**YongCan iPhone 15 visual review** builds an isolated `UI_REVIEW` simulator
 app, installs it on a temporary iPhone 15, and captures 30 screenshots: 14 real
 SwiftUI scenes in light/dark plus two accessibility text layouts. The private
 source's `scripts/capture-ui.sh` waits for per-scene readiness, validates scenario
@@ -91,14 +95,19 @@ state and PNG dimensions, and produces a source-commit/SHA256 manifest. Sample
 data replaces credentials and business requests; the review mode is absent from
 the device build. The temporary simulator is shut down and deleted on exit.
 
-The artifact `YongCan-build-RUN_NUMBER` contains only:
+The artifact `YongCan-IPA-RUN_NUMBER` contains only:
 
 - `YongCan-unsigned.ipa.enc`, after a successful package validation.
 - `YongCanDiagnostics.tar.gz.enc`, including private build/test logs and the
   plaintext IPA's checksum; diagnostics are uploaded even when building fails.
+
+The separate artifact `YongCan-UIReview-RUN_NUMBER` contains only:
+
 - `YongCanUIReview.tar.gz.enc`, containing PNGs, readiness metadata and the
   manifest. If screenshot capture fails, available partial outputs are encrypted
   for diagnosis; a successful run requires all 30 images.
+- `YongCanUIReviewDiagnostics.tar.gz.enc`, with private simulator build and
+  capture logs, uploaded even when the review fails.
 
 Decrypt with the same password file and helper used for KikisApp:
 
@@ -106,6 +115,7 @@ Decrypt with the same password file and helper used for KikisApp:
 bash decrypt-ipa.sh YongCan-unsigned.ipa.enc
 bash decrypt-ipa.sh YongCanDiagnostics.tar.gz.enc
 bash decrypt-ipa.sh YongCanUIReview.tar.gz.enc
+bash decrypt-ipa.sh YongCanUIReviewDiagnostics.tar.gz.enc
 tar -xzf YongCanDiagnostics.tar.gz
 mkdir -p ui-review && tar -xzf YongCanUIReview.tar.gz -C ui-review
 shasum -a 256 -c YongCanPrivateLogs/YongCan-unsigned.ipa.sha256

@@ -1,4 +1,4 @@
-name: Build private YongCan IPA
+name: Build private YongCan IPA and UI review
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   build:
-    name: Unsigned YongCan iPhone IPA
+    name: Unsigned YongCan iOS 27 IPA
     runs-on: xcode-27
     timeout-minutes: 60
     defaults:
@@ -136,6 +136,93 @@ jobs:
           (cd "$RUNNER_TEMP" && shasum -a 256 YongCan-unsigned.ipa) \
             > "$RUNNER_TEMP/YongCanPrivateLogs/YongCan-unsigned.ipa.sha256"
 
+      - name: Encrypt IPA and private diagnostics
+        if: always()
+        env:
+          KIKIS_ARTIFACT_PASSWORD: ${{ secrets.KIKIS_ARTIFACT_PASSWORD }}
+          IPA_READY: ${{ steps.package.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$KIKIS_ARTIFACT_PASSWORD"
+          mkdir -p "$RUNNER_TEMP/YongCanPrivateLogs"
+          if test "$IPA_READY" = true && test -s "$RUNNER_TEMP/YongCan-unsigned.ipa"; then
+            openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+              -in "$RUNNER_TEMP/YongCan-unsigned.ipa" \
+              -out "$GITHUB_WORKSPACE/YongCan-unsigned.ipa.enc" \
+              -pass env:KIKIS_ARTIFACT_PASSWORD
+          fi
+          if test -z "$(find "$RUNNER_TEMP/YongCanPrivateLogs" -type f -print -quit)"; then
+            echo "No private build diagnostics were generated." > "$RUNNER_TEMP/YongCanPrivateLogs/status.txt"
+          fi
+          tar -czf "$RUNNER_TEMP/YongCanDiagnostics.tar.gz" -C "$RUNNER_TEMP" YongCanPrivateLogs
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+            -in "$RUNNER_TEMP/YongCanDiagnostics.tar.gz" \
+            -out "$GITHUB_WORKSPACE/YongCanDiagnostics.tar.gz.enc" \
+            -pass env:KIKIS_ARTIFACT_PASSWORD
+          rm -f "$RUNNER_TEMP/YongCanDiagnostics.tar.gz"
+
+      - name: Publish encrypted artifacts only
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: YongCan-IPA-${{ github.run_number }}
+          overwrite: true
+          path: |
+            YongCan-unsigned.ipa.enc
+            YongCanDiagnostics.tar.gz.enc
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  ui-review:
+    name: YongCan iPhone 15 visual review
+    runs-on: xcode-27
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Verify artifact encryption is configured
+        env:
+          KIKIS_ARTIFACT_PASSWORD: ${{ secrets.KIKIS_ARTIFACT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$KIKIS_ARTIFACT_PASSWORD" || { echo "::error::The artifact encryption password is not configured."; exit 1; }
+          mkdir -p "$RUNNER_TEMP/YongCanPrivateLogs"
+
+      - name: Checkout source from private repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: gitupdate/yongcan
+          ref: ${{ inputs.source_ref }}
+          path: private-source
+          fetch-depth: 1
+          ssh-key: ${{ secrets.YONGCAN_PRIVATE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Verify Xcode 27 and iOS SDK
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          sdk_version="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          echo "iOS Simulator SDK: $sdk_version"
+          test "${sdk_version%%.*}" -ge 27
+
+      - name: Generate Xcode project
+        run: |
+          set -euo pipefail
+          umask 077
+          exec 3>&1
+          trap 'echo "::error::Review project generation failed. Download encrypted diagnostics." >&3' ERR
+          exec > "$RUNNER_TEMP/YongCanPrivateLogs/project.log" 2>&1
+          cd "$GITHUB_WORKSPACE/private-source"
+          git rev-parse HEAD > "$RUNNER_TEMP/YongCanPrivateLogs/source-commit.txt"
+          brew list --versions xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen generate
+          test -f YongCan.xcodeproj/project.pbxproj
+
       - name: Build simulator app with isolated review data
         run: |
           set -euo pipefail
@@ -163,22 +250,15 @@ jobs:
           UI_REVIEW_APP="$RUNNER_TEMP/YongCanReviewBuild/Build/Products/Debug-iphonesimulator/YongCan.app" \
             bash scripts/capture-ui.sh
 
-      - name: Encrypt IPA screenshots and private diagnostics
+      - name: Encrypt screenshots and private diagnostics
         if: always()
         env:
           KIKIS_ARTIFACT_PASSWORD: ${{ secrets.KIKIS_ARTIFACT_PASSWORD }}
-          IPA_READY: ${{ steps.package.outcome == 'success' }}
         run: |
           set -euo pipefail
           umask 077
           test -n "$KIKIS_ARTIFACT_PASSWORD"
           mkdir -p "$RUNNER_TEMP/YongCanPrivateLogs"
-          if test "$IPA_READY" = true && test -s "$RUNNER_TEMP/YongCan-unsigned.ipa"; then
-            openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
-              -in "$RUNNER_TEMP/YongCan-unsigned.ipa" \
-              -out "$GITHUB_WORKSPACE/YongCan-unsigned.ipa.enc" \
-              -pass env:KIKIS_ARTIFACT_PASSWORD
-          fi
           if test -d "$RUNNER_TEMP/YongCanUIReview"; then
             tar -czf "$RUNNER_TEMP/YongCanUIReview.tar.gz" -C "$RUNNER_TEMP/YongCanUIReview" .
             openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
@@ -188,24 +268,24 @@ jobs:
             rm -f "$RUNNER_TEMP/YongCanUIReview.tar.gz"
           fi
           if test -z "$(find "$RUNNER_TEMP/YongCanPrivateLogs" -type f -print -quit)"; then
-            echo "No private build diagnostics were generated." > "$RUNNER_TEMP/YongCanPrivateLogs/status.txt"
+            echo "No private review diagnostics were generated." > "$RUNNER_TEMP/YongCanPrivateLogs/status.txt"
           fi
-          tar -czf "$RUNNER_TEMP/YongCanDiagnostics.tar.gz" -C "$RUNNER_TEMP" YongCanPrivateLogs
+          tar -czf "$RUNNER_TEMP/YongCanUIReviewDiagnostics.tar.gz" -C "$RUNNER_TEMP" YongCanPrivateLogs
           openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
-            -in "$RUNNER_TEMP/YongCanDiagnostics.tar.gz" \
-            -out "$GITHUB_WORKSPACE/YongCanDiagnostics.tar.gz.enc" \
+            -in "$RUNNER_TEMP/YongCanUIReviewDiagnostics.tar.gz" \
+            -out "$GITHUB_WORKSPACE/YongCanUIReviewDiagnostics.tar.gz.enc" \
             -pass env:KIKIS_ARTIFACT_PASSWORD
-          rm -f "$RUNNER_TEMP/YongCanDiagnostics.tar.gz"
+          rm -f "$RUNNER_TEMP/YongCanUIReviewDiagnostics.tar.gz"
 
-      - name: Publish encrypted artifacts only
+      - name: Publish encrypted review artifacts only
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: YongCan-build-${{ github.run_number }}
+          name: YongCan-UIReview-${{ github.run_number }}
+          overwrite: true
           path: |
-            YongCan-unsigned.ipa.enc
-            YongCanDiagnostics.tar.gz.enc
             YongCanUIReview.tar.gz.enc
+            YongCanUIReviewDiagnostics.tar.gz.enc
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
