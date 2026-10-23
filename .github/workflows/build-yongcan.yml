@@ -136,7 +136,34 @@ jobs:
           (cd "$RUNNER_TEMP" && shasum -a 256 YongCan-unsigned.ipa) \
             > "$RUNNER_TEMP/YongCanPrivateLogs/YongCan-unsigned.ipa.sha256"
 
-      - name: Encrypt IPA and private diagnostics
+      - name: Build simulator app with isolated review data
+        run: |
+          set -euo pipefail
+          umask 077
+          exec 3>&1
+          trap 'echo "::error::Simulator build failed. Download encrypted diagnostics." >&3' ERR
+          exec > "$RUNNER_TEMP/YongCanPrivateLogs/simulator-build.log" 2>&1
+          cd "$GITHUB_WORKSPACE/private-source"
+          xcodebuild build \
+            -project YongCan.xcodeproj -scheme YongCan -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/YongCanReviewBuild" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG UI_REVIEW'
+
+      - name: Capture light dark and large text UI screenshots
+        run: |
+          set -euo pipefail
+          umask 077
+          exec 3>&1
+          trap 'echo "::error::UI screenshot capture failed. Download encrypted diagnostics." >&3' ERR
+          exec > "$RUNNER_TEMP/YongCanPrivateLogs/capture-ui.log" 2>&1
+          cd "$GITHUB_WORKSPACE/private-source"
+          UI_REVIEW_APP="$RUNNER_TEMP/YongCanReviewBuild/Build/Products/Debug-iphonesimulator/YongCan.app" \
+            bash scripts/capture-ui.sh
+
+      - name: Encrypt IPA screenshots and private diagnostics
         if: always()
         env:
           KIKIS_ARTIFACT_PASSWORD: ${{ secrets.KIKIS_ARTIFACT_PASSWORD }}
@@ -151,6 +178,14 @@ jobs:
               -in "$RUNNER_TEMP/YongCan-unsigned.ipa" \
               -out "$GITHUB_WORKSPACE/YongCan-unsigned.ipa.enc" \
               -pass env:KIKIS_ARTIFACT_PASSWORD
+          fi
+          if test -d "$RUNNER_TEMP/YongCanUIReview"; then
+            tar -czf "$RUNNER_TEMP/YongCanUIReview.tar.gz" -C "$RUNNER_TEMP/YongCanUIReview" .
+            openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+              -in "$RUNNER_TEMP/YongCanUIReview.tar.gz" \
+              -out "$GITHUB_WORKSPACE/YongCanUIReview.tar.gz.enc" \
+              -pass env:KIKIS_ARTIFACT_PASSWORD
+            rm -f "$RUNNER_TEMP/YongCanUIReview.tar.gz"
           fi
           if test -z "$(find "$RUNNER_TEMP/YongCanPrivateLogs" -type f -print -quit)"; then
             echo "No private build diagnostics were generated." > "$RUNNER_TEMP/YongCanPrivateLogs/status.txt"
@@ -170,6 +205,7 @@ jobs:
           path: |
             YongCan-unsigned.ipa.enc
             YongCanDiagnostics.tar.gz.enc
+            YongCanUIReview.tar.gz.enc
           if-no-files-found: error
           retention-days: 7
           compression-level: 0

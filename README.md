@@ -83,18 +83,31 @@ archives the unsigned iPhone app, and checks its bundle ID, iOS 17 minimum,
 arm64 executable and IPA archive integrity. The Actions run number supplies
 the build number. Signing certificates and provisioning profiles are not needed.
 
+After validating the IPA, the same job builds an isolated `UI_REVIEW` simulator
+app, installs it on a temporary iPhone 15, and captures 30 screenshots: 14 real
+SwiftUI scenes in light/dark plus two accessibility text layouts. The private
+source's `scripts/capture-ui.sh` waits for per-scene readiness, validates scenario
+state and PNG dimensions, and produces a source-commit/SHA256 manifest. Sample
+data replaces credentials and business requests; the review mode is absent from
+the device build. The temporary simulator is shut down and deleted on exit.
+
 The artifact `YongCan-build-RUN_NUMBER` contains only:
 
 - `YongCan-unsigned.ipa.enc`, after a successful package validation.
 - `YongCanDiagnostics.tar.gz.enc`, including private build/test logs and the
   plaintext IPA's checksum; diagnostics are uploaded even when building fails.
+- `YongCanUIReview.tar.gz.enc`, containing PNGs, readiness metadata and the
+  manifest. If screenshot capture fails, available partial outputs are encrypted
+  for diagnosis; a successful run requires all 30 images.
 
 Decrypt with the same password file and helper used for KikisApp:
 
 ```sh
 bash decrypt-ipa.sh YongCan-unsigned.ipa.enc
 bash decrypt-ipa.sh YongCanDiagnostics.tar.gz.enc
+bash decrypt-ipa.sh YongCanUIReview.tar.gz.enc
 tar -xzf YongCanDiagnostics.tar.gz
+mkdir -p ui-review && tar -xzf YongCanUIReview.tar.gz -C ui-review
 shasum -a 256 -c YongCanPrivateLogs/YongCan-unsigned.ipa.sha256
 ```
 
